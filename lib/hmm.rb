@@ -335,7 +335,10 @@ class HMM
 		def log_add(values)
 			x = values.max
 			if x > -Infinity
-				sum_diffs = values.map{ |value| Math::E**(value - x) }.sum
+				sum_diffs = 0
+				values.each do |value|
+					sum_diffs += Math::E**(value - x)
+				end
 				return x + log(sum_diffs)
 			else
 				return x
