@@ -8,7 +8,7 @@
 require 'rubygems'
 require 'narray'
 
-class Array; def sum; inject( nil ) { |sum,x| sum ? sum+x : x }; end; end
+class Array; def sum; inject(:+); end; end
 
 class HMM
 	
@@ -24,9 +24,15 @@ class HMM
 		#	q_lex -- index of state labels
 		#	debug -- flag for verbose output to stdout
 		#	train -- a list of labelled sequences for supervised training
-		
+			
 		def initialize
 			@o_lex, @q_lex, @train = [], [], []
+		end
+	
+		def precompute!
+			@log_pi = log(pi) if !@log_pi
+			@log_a  = log(a)  if !@log_a
+			@log_b  = log(b)  if !@log_b
 		end
 		
 		def add_to_train(o, q)
@@ -36,6 +42,8 @@ class HMM
 		end
 		
 		def train
+			@log_pi = @log_a = @log_b = nil # invalidate the pre-computed logs of these probabilities
+
 			# initialize Pi, A, and B
 			@pi = NArray.float(@q_lex.length)
 			@a = NArray.float(@q_lex.length, @q_lex.length)
@@ -62,6 +70,8 @@ class HMM
 		end	
 		
 		def train_unsupervised2(sequences)
+			@log_pi = @log_a = @log_b = nil # invalidate the pre-computed logs of these probabilities
+
 			# for debugging ONLY
 			orig_sequences = sequences.clone
 			sequences = [sequences.sum]
@@ -133,6 +143,8 @@ class HMM
 		
 		
 		def train_unsupervised(sequences, max_iterations = 10)
+			@log_pi = @log_a = @log_b = nil # invalidate the pre-computed logs of these probabilities
+
 			# initialize model parameters if we don't already have an estimate
 			@pi ||= NArray.float(@q_lex.length).fill(1)/@q_lex.length			
 			@a ||= NArray.float(@q_lex.length, @q_lex.length).fill(1)/@q_lex.length
@@ -247,6 +259,7 @@ class HMM
 		end
 		
 		def xi(sequence)
+			precompute!
 			xi = NArray.float(sequence.length-1, q_lex.length, q_lex.length)
 			
 			alpha = forward_probability(sequence)
@@ -256,8 +269,8 @@ class HMM
 				denom = 0
 				q_lex.each_index do |i|
 					q_lex.each_index do |j|
-						x = alpha[t, i] + log(@a[i,j]) + \
-							log(@b[j,index(sequence[t+1], o_lex)]) + \
+						x = alpha[t, i] + @log_a[i,j] + \
+							@log_b[j,index(sequence[t+1], o_lex)] + \
 							beta[t+1, j]
 						denom = log_add([denom, x])
 					end
@@ -265,8 +278,8 @@ class HMM
 				
 				q_lex.each_index do |i|
 					q_lex.each_index do |j|
-						numer = alpha[t, i] + log(@a[i,j]) + \
-							log(@b[j,index(sequence[t+1], o_lex)]) + \
+						numer = alpha[t, i] + @log_a[i,j] + \
+							@log_b[j,index(sequence[t+1], o_lex)] + \
 							beta[t+1, j]
 						xi[t, i, j] = numer - denom
 					end
@@ -293,17 +306,18 @@ class HMM
 		end
 		
 		def forward_probability(sequence)
+			precompute!
 			alpha = NArray.float(sequence.length, q_lex.length).fill(-Infinity)
 			
-			alpha[0, true] = log(@pi) + log(@b[true, index(sequence.first, o_lex)])
+			alpha[0, true] = @log_pi + @log_b[true, index(sequence.first, o_lex)]
 			
 			sequence.each_with_index do |o, t|
 				next if t==0
 				q_lex.each_index do |i|
 					q_lex.each_index do |j|
-						alpha[t, i] = log_add([alpha[t, i], alpha[t-1, j]+log(@a[j, i])])
+						alpha[t, i] = log_add([alpha[t, i], alpha[t-1, j]+@log_a[j, i]])
 					end
-					alpha[t, i] += log(b[i, index(o, o_lex)])
+					alpha[t, i] += @log_b[i, index(o, o_lex)]
 				end
 			end
 			alpha
@@ -332,6 +346,7 @@ class HMM
 		end
 		
 		def backward_probability(sequence)
+			precompute!
 			beta = NArray.float(sequence.length, q_lex.length).fill(-Infinity)
 			
 			beta[-1, true] = log(1)
@@ -339,8 +354,8 @@ class HMM
 			(sequence.length-2).downto(0) do |t|
 				q_lex.each_index do |i|
 					q_lex.each_index do |j|
-						beta[t, i] = log_add([beta[t,i], log(@a[i, j]) \
-							+ log(@b[j, index(sequence[t+1], o_lex)]) \
+						beta[t, i] = log_add([beta[t,i], @log_a[i, j] \
+							+ @log_b[j, index(sequence[t+1], o_lex)] \
 							+ beta[t+1, j]])
 					end
 				end
@@ -350,6 +365,7 @@ class HMM
 		end
 		
 		def decode(o_sequence)
+			precompute!
 			# Viterbi!  with log probability math to avoid underflow
 			
 			# encode observations
@@ -358,12 +374,12 @@ class HMM
 			# initialize.  skipping the 0 initialization for psi, as it's never used.
 			# psi will have T-1 elements instead of T, allowing it
 			# to control the backtrack iterator later.
-			delta, psi = [log(pi)+log(b[true, o_sequence.shift])], []
+			delta, psi = [@log_pi+@log_b[true, o_sequence.shift]], []
 
 			# recursive step
 			o_sequence.each do |o|
-				psi << argmax(delta.last+log(a))
-				delta << (delta.last+log(a)).max(0)+log(b[true, o])
+				psi << argmax(delta.last+@log_a)
+				delta << (delta.last+@log_a).max(0)+@log_b[true, o]
 			end
 			
 			# initialize Q* with final state
