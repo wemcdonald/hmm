@@ -8,8 +8,6 @@
 require 'rubygems'
 require 'narray'
 
-class Array; def sum; inject(:+); end; end
-
 class HMM
 	
 	Infinity = 1.0/0
